@@ -1,6 +1,5 @@
 import { FaceRecognitionResult } from '@/types/faceRecognition';
 import { FC } from 'react';
-import { Label } from './ui/label';
 import { Button } from './ui/button';
 import { downloadAllImages } from '@/utils/file';
 
@@ -24,9 +23,7 @@ export const MatchingPhotos: FC<Props> = ({ photos }) => {
   return (
     <div>
       <div className='flex items-center justify-between gap-4'>
-        <Label asChild>
-          <p className='text-left font-bold'>Matching photos</p>
-        </Label>
+        <p className='text-left font-bold'>Matching photos</p>
 
         <Button variant='link' onClick={downloadAll}>
           Download All
