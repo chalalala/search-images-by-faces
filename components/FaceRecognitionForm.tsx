@@ -7,6 +7,7 @@ import { LoaderCircleIcon, UploadIcon, UserIcon } from 'lucide-react';
 import { Button } from './ui/button';
 import Image from 'next/image';
 import { CameraInput } from './CameraInput';
+import clsx from 'clsx';
 
 const MODEL_URL = '/models';
 
@@ -32,6 +33,7 @@ export const FaceRecognitionForm: FC<Props> = ({ results, setResults }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [isPending, startTransition] = useTransition();
   const [isUsingCamera, setIsUsingCamera] = useState(false);
+  const [countProcessingItems, setCountProcessingItems] = useState(0);
 
   const isFirstLoad = useRef(true);
   const faceImageElementRef = useRef<HTMLImageElement>(null);
@@ -61,6 +63,8 @@ export const FaceRecognitionForm: FC<Props> = ({ results, setResults }) => {
   const uploadPhotos = async (event: ChangeEvent<HTMLInputElement>) => {
     setIsLoading(true);
     setResults(null);
+    setCountProcessingItems(0);
+    setQueryingImages([]);
 
     const imgFiles = event.target.files || [];
 
@@ -94,6 +98,8 @@ export const FaceRecognitionForm: FC<Props> = ({ results, setResults }) => {
           .withFaceLandmarks()
           .withFaceDescriptors();
 
+        setCountProcessingItems((prevCount) => prevCount + 1);
+
         if (!fullFaceDescriptions.length) {
           continue;
         }
@@ -113,18 +119,14 @@ export const FaceRecognitionForm: FC<Props> = ({ results, setResults }) => {
           }
         }
       }
-
-      if (!results) {
-        setResults([]);
-      }
     });
   };
 
   const updateFaceMatcher = async (faceImageUrl: string) => {
     // Reset results when a new face image is uploaded
     setResults(null);
-
     setIsLoading(true);
+    setCountProcessingItems(0);
     setFaceImageUrl(faceImageUrl);
 
     const faceImageElement = document.createElement('img');
@@ -187,7 +189,14 @@ export const FaceRecognitionForm: FC<Props> = ({ results, setResults }) => {
         </Button>
       ) : null}
 
-      {isPending || isLoading ? <LoaderCircleIcon className='mx-auto block h-8 w-8 animate-spin' /> : null}
+      {isPending || isLoading ? (
+        <div className='flex items-center justify-center gap-1'>
+          <LoaderCircleIcon className='block h-8 w-8 animate-spin' />
+          <span className={clsx({ hidden: queryingImages.length === 0 })}>
+            Processing {countProcessingItems} / {queryingImages.length}
+          </span>
+        </div>
+      ) : null}
     </form>
   );
 };
