@@ -7,7 +7,8 @@ import { LoaderCircleIcon, UploadIcon, UserIcon } from 'lucide-react';
 import { Button } from './ui/button';
 import Image from 'next/image';
 import { CameraInput } from './CameraInput';
-import { getEnvVariable } from '@/actions/env';
+import { getDriveFolderId } from '@/utils/googleapis';
+import { getDriveFileContent, getDriveFolderContent } from '@/utils/apis/googleapis';
 
 const MODEL_URL = '/models';
 
@@ -97,12 +98,17 @@ export const FaceRecognitionForm: FC<Props> = ({ setResults }) => {
     }
   };
 
+  const resetResults = () => {
+    setResults(null);
+    setProcessedItems(0);
+    setTotalFiles(0);
+  };
+
   const updateFaceMatcher = async (faceImageUrl: string) => {
     // Reset results when a new face image is uploaded
-    setResults(null);
     setIsLoading(true);
-    setProcessedItems(0);
     setFaceImageUrl(faceImageUrl);
+    resetResults();
 
     const faceImageElement = document.createElement('img');
     faceImageElement.src = faceImageUrl;
@@ -115,9 +121,7 @@ export const FaceRecognitionForm: FC<Props> = ({ setResults }) => {
 
   const processFile = async (file: File & { mimeType: string; id: string }) => {
     try {
-      const apiKey = await getEnvVariable('GOOGLE_DRIVE_API_KEY');
-      const res = await fetch(`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media&key=${apiKey}`);
-      const buffer = await res.arrayBuffer();
+      const buffer = await getDriveFileContent(file.id);
       const imgFile = new Blob([buffer], { type: file.mimeType });
       const img = await faceapi.bufferToImage(imgFile);
       await getFaceRecognition({ fileBlob: imgFile, fileName: file.name, src: img.src, element: img });
@@ -127,27 +131,26 @@ export const FaceRecognitionForm: FC<Props> = ({ setResults }) => {
   };
 
   const getMatchingPhotos = async () => {
-    const apiKey = await getEnvVariable('GOOGLE_DRIVE_API_KEY');
+    setIsLoading(true);
+    resetResults();
+
     const folderLink = driveFolderInputRef.current?.value;
 
     if (!folderLink) {
       return;
     }
 
-    const folderRegex = /(?:folders\/)([^?\/]+)/g;
-    const folderId = folderRegex.exec(folderLink)?.[1];
+    const folderId = getDriveFolderId(folderLink);
 
     if (!folderId) {
       return;
     }
 
-    const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=%27${folderId}%27%20in%20parents&key=${apiKey}`);
-    const data = await res.json();
+    const data = await getDriveFolderContent(folderId);
 
-    setIsLoading(true);
-    setResults(null);
-    setProcessedItems(0);
-    setTotalFiles(0);
+    if (!data) {
+      return;
+    }
 
     for (const file of data.files) {
       try {
