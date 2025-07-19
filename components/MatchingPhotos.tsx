@@ -32,8 +32,8 @@ export const MatchingPhotos: FC<Props> = ({ photos }) => {
 
       <div className='flex flex-wrap gap-4'>
         {photos.map((img) => (
-          <picture key={img.file.name} className='h-40 flex-auto'>
-            <img src={img.element.src} alt={img.file.name} className='h-full w-full rounded bg-gray-100 object-contain' />
+          <picture key={img.src} className='h-40 flex-auto'>
+            <img src={img.src} alt='Image' className='h-full w-full rounded bg-gray-100 object-contain' />
           </picture>
         ))}
       </div>

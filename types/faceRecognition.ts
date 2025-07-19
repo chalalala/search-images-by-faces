@@ -1,4 +1,5 @@
 export interface FaceRecognitionResult {
-  file: File;
-  element: HTMLImageElement;
+  fileBlob: Blob;
+  fileName: string;
+  src: string;
 }

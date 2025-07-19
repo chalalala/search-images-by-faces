@@ -26,7 +26,7 @@ export const downloadAllImages = (results: FaceRecognitionResult[] | null) => {
   const img = zip.folder('images');
 
   results.forEach((image) => {
-    img?.file(image.file.name, image.file, {
+    img?.file(image.fileName, image.fileBlob, {
       base64: true,
     });
   });

@@ -1,4 +1,4 @@
-import { ChangeEvent, Dispatch, FC, SetStateAction, useEffect, useRef, useState } from 'react';
+import { ChangeEvent, Dispatch, FC, SetStateAction, useEffect, useRef, useState, useTransition } from 'react';
 import * as faceapi from 'face-api.js';
 import { Label } from './ui/label';
 import { Input } from './ui/input';
@@ -7,15 +7,16 @@ import { LoaderCircleIcon, UploadIcon, UserIcon } from 'lucide-react';
 import { Button } from './ui/button';
 import Image from 'next/image';
 import { CameraInput } from './CameraInput';
-import { getEnvVariable } from '@/actions/env';
+import clsx from 'clsx';
 
 const MODEL_URL = '/models';
 
 interface Props {
+  results: FaceRecognitionResult[] | null;
   setResults: Dispatch<SetStateAction<FaceRecognitionResult[] | null>>;
 }
 
-export const FaceRecognitionForm: FC<Props> = ({ setResults }) => {
+export const FaceRecognitionForm: FC<Props> = ({ results, setResults }) => {
   const [faceImageUrl, setFaceImageUrl] = useState('');
   const [faceWithDescriptors, setFaceWithDescriptors] = useState<
     | faceapi.WithFaceDescriptor<
@@ -28,14 +29,14 @@ export const FaceRecognitionForm: FC<Props> = ({ setResults }) => {
       >
     | undefined
   >();
+  const [queryingImages, setQueryingImages] = useState<FaceRecognitionResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isPending, startTransition] = useTransition();
   const [isUsingCamera, setIsUsingCamera] = useState(false);
-  const [processedItems, setProcessedItems] = useState(0);
-  const [totalFiles, setTotalFiles] = useState(0);
+  const [countProcessingItems, setCountProcessingItems] = useState(0);
 
   const isFirstLoad = useRef(true);
   const faceImageElementRef = useRef<HTMLImageElement>(null);
-  const driveFolderInputRef = useRef<HTMLInputElement>(null);
 
   const loadFaceApi = async () => {
     await faceapi.loadSsdMobilenetv1Model(MODEL_URL);
@@ -59,49 +60,73 @@ export const FaceRecognitionForm: FC<Props> = ({ setResults }) => {
     setIsLoading(false);
   };
 
-  const getFaceRecognition = async (input: FaceRecognitionResult & { element: HTMLImageElement }) => {
-    if (!faceImageElementRef.current) {
+  const uploadPhotos = async (event: ChangeEvent<HTMLInputElement>) => {
+    setIsLoading(true);
+    setResults(null);
+    setCountProcessingItems(0);
+    setQueryingImages([]);
+
+    const imgFiles = event.target.files || [];
+
+    if (!imgFiles.length) {
       return;
     }
 
-    try {
-      // Detect faces in the uploaded photos
-      const fullFaceDescriptions = await faceapi
-        .detectAllFaces(
-          input.element,
-          new faceapi.SsdMobilenetv1Options({
-            minConfidence: Number(process.env.NEXT_PUBLIC_MIN_CONFIDENCE ?? 0.3),
-          })
-        )
-        .withFaceLandmarks()
-        .withFaceDescriptors();
+    const images = [];
 
-      setProcessedItems((prevCount) => prevCount + 1);
+    for (const imgFile of imgFiles) {
+      const img = await faceapi.bufferToImage(imgFile);
 
-      if (!fullFaceDescriptions.length) {
-        return;
-      }
+      images.push({ file: imgFile, element: img });
+    }
 
-      // Find photos with faces matching the uploaded face
-      const faceMatcher = new faceapi.FaceMatcher(fullFaceDescriptions, Number(process.env.NEXT_PUBLIC_FACE_MATCHER_THRESHOLD ?? 0.5));
+    setQueryingImages(images);
+    setIsLoading(false);
+  };
 
-      if (faceWithDescriptors) {
-        const bestMatch = faceMatcher.findBestMatch(faceWithDescriptors.descriptor);
+  const getFaceRecognition = () => {
+    startTransition(async () => {
+      for (const input of queryingImages) {
+        // Detect faces in the uploaded photos
+        const fullFaceDescriptions = await faceapi
+          .detectAllFaces(
+            input.element,
+            new faceapi.SsdMobilenetv1Options({
+              minConfidence: Number(process.env.NEXT_PUBLIC_MIN_CONFIDENCE ?? 0.3),
+            })
+          )
+          .withFaceLandmarks()
+          .withFaceDescriptors();
 
-        if (bestMatch.label !== 'unknown') {
-          setResults((results) => [...(results || []), { fileBlob: input.fileBlob, fileName: input.fileName, src: input.element.src }]);
+        setCountProcessingItems((prevCount) => prevCount + 1);
+
+        if (!fullFaceDescriptions.length) {
+          continue;
+        }
+
+        // Find photos with faces matching the uploaded face
+        const faceMatcher = new faceapi.FaceMatcher(fullFaceDescriptions, Number(process.env.NEXT_PUBLIC_FACE_MATCHER_THRESHOLD ?? 0.5));
+
+        if (!faceImageElementRef.current) {
+          continue;
+        }
+
+        if (faceWithDescriptors) {
+          const bestMatch = faceMatcher.findBestMatch(faceWithDescriptors.descriptor);
+
+          if (bestMatch.label !== 'unknown') {
+            setResults((results) => [...(results || []), input]);
+          }
         }
       }
-    } catch (error) {
-      console.error('Error processing image:', error);
-    }
+    });
   };
 
   const updateFaceMatcher = async (faceImageUrl: string) => {
     // Reset results when a new face image is uploaded
     setResults(null);
     setIsLoading(true);
-    setProcessedItems(0);
+    setCountProcessingItems(0);
     setFaceImageUrl(faceImageUrl);
 
     const faceImageElement = document.createElement('img');
@@ -113,62 +138,6 @@ export const FaceRecognitionForm: FC<Props> = ({ setResults }) => {
     setIsLoading(false);
   };
 
-  const processFile = async (file: File & { mimeType: string; id: string }) => {
-    try {
-      const apiKey = await getEnvVariable('GOOGLE_DRIVE_API_KEY');
-      const res = await fetch(`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media&key=${apiKey}`);
-      const buffer = await res.arrayBuffer();
-      const imgFile = new Blob([buffer], { type: file.mimeType });
-      const img = await faceapi.bufferToImage(imgFile);
-      await getFaceRecognition({ fileBlob: imgFile, fileName: file.name, src: img.src, element: img });
-    } finally {
-      setProcessedItems((processedItems) => processedItems + 1);
-    }
-  };
-
-  const getMatchingPhotos = async () => {
-    const apiKey = await getEnvVariable('GOOGLE_DRIVE_API_KEY');
-    const folderLink = driveFolderInputRef.current?.value;
-
-    if (!folderLink) {
-      return;
-    }
-
-    const folderRegex = /(?:folders\/)([^?\/]+)/g;
-    const folderId = folderRegex.exec(folderLink)?.[1];
-
-    if (!folderId) {
-      return;
-    }
-
-    const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=%27${folderId}%27%20in%20parents&key=${apiKey}`);
-    const data = await res.json();
-
-    setIsLoading(true);
-    setResults(null);
-    setProcessedItems(0);
-    setTotalFiles(0);
-
-    for (const file of data.files) {
-      try {
-        if (!file.mimeType.startsWith('image/')) {
-          // Skip non-image files
-          continue;
-        }
-
-        setTotalFiles((totalFiles) => totalFiles + 1);
-        processFile(file);
-      } catch (e) {
-        console.error('Error processing file:', file.name, e);
-
-        // Skip this file if there's an error
-        continue;
-      }
-    }
-
-    setIsLoading(false);
-  };
-
   useEffect(() => {
     if (isFirstLoad.current) {
       loadFaceApi();
@@ -177,7 +146,7 @@ export const FaceRecognitionForm: FC<Props> = ({ setResults }) => {
   }, []);
 
   return (
-    <form className='space-y-8' action={getMatchingPhotos}>
+    <form className='space-y-8' onSubmit={getFaceRecognition}>
       <div className='space-y-2.5'>
         <p className='font-bold'>Upload a photo of your face</p>
         <div className='flex flex-wrap justify-between gap-4'>
@@ -210,17 +179,21 @@ export const FaceRecognitionForm: FC<Props> = ({ setResults }) => {
       </div>
 
       <label className='block space-y-2.5'>
-        <span className='font-bold'>Google Drive Folder</span>
-        <Input type='text' ref={driveFolderInputRef} />
+        <span className='font-bold'>Upload photos you want to search for</span>
+        <Input type='file' onChange={uploadPhotos} accept='.jpg, .jpeg, .png' multiple className='cursor-pointer' />
       </label>
 
-      <Button>Get matching photos</Button>
+      {!isPending && queryingImages.length && !results ? (
+        <Button onClick={getFaceRecognition} className='mx-auto block'>
+          Get matching photos
+        </Button>
+      ) : null}
 
-      {processedItems < totalFiles ? (
+      {isPending || isLoading ? (
         <div className='flex items-center justify-center gap-1'>
           <LoaderCircleIcon className='block h-8 w-8 animate-spin' />
-          <span>
-            Processed {processedItems} items / {totalFiles} items
+          <span className={clsx({ hidden: queryingImages.length === 0 })}>
+            Processing {countProcessingItems} / {queryingImages.length}
           </span>
         </div>
       ) : null}
