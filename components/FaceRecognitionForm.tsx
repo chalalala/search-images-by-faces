@@ -213,8 +213,8 @@ export const FaceRecognitionForm: FC<Props> = ({ setResults }) => {
       </div>
 
       <label className='block space-y-2.5'>
-        <span className='font-bold'>Google Drive Folder</span>
-        <Input type='text' ref={driveFolderInputRef} />
+        <span className='font-bold'>Public link of Google Drive Folder</span>
+        <Input ref={driveFolderInputRef} type='text' placeholder='https://drive.google.com/drive/u/0/folders/XXX' />
       </label>
 
       <Button>Get matching photos</Button>
