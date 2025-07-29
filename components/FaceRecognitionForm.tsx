@@ -1,4 +1,4 @@
-import { ChangeEvent, Dispatch, FC, SetStateAction, useEffect, useRef, useState } from 'react';
+import { ChangeEvent, Dispatch, FC, FormEvent, SetStateAction, useEffect, useRef, useState } from 'react';
 import * as faceapi from 'face-api.js';
 import { Label } from './ui/label';
 import { Input } from './ui/input';
@@ -130,7 +130,9 @@ export const FaceRecognitionForm: FC<Props> = ({ setResults }) => {
     }
   };
 
-  const getMatchingPhotos = async () => {
+  const getMatchingPhotos = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
     setIsLoading(true);
     resetResults();
 
@@ -146,28 +148,33 @@ export const FaceRecognitionForm: FC<Props> = ({ setResults }) => {
       return;
     }
 
-    const data = await getDriveFolderContent(folderId);
+    let nextPageToken = '';
 
-    if (!data) {
-      return;
-    }
+    do {
+      const data = await getDriveFolderContent(folderId, nextPageToken);
+      nextPageToken = data.nextPageToken;
 
-    for (const file of data.files) {
-      try {
-        if (!file.mimeType.startsWith('image/')) {
-          // Skip non-image files
+      if (!data) {
+        return;
+      }
+
+      for (const file of data.files) {
+        try {
+          if (!file.mimeType.startsWith('image/')) {
+            // Skip non-image files
+            continue;
+          }
+
+          setTotalFiles((totalFiles) => totalFiles + 1);
+          processFile(file);
+        } catch (e) {
+          console.error('Error processing file:', file.name, e);
+
+          // Skip this file if there's an error
           continue;
         }
-
-        setTotalFiles((totalFiles) => totalFiles + 1);
-        processFile(file);
-      } catch (e) {
-        console.error('Error processing file:', file.name, e);
-
-        // Skip this file if there's an error
-        continue;
       }
-    }
+    } while (nextPageToken);
 
     setIsLoading(false);
   };
@@ -180,7 +187,7 @@ export const FaceRecognitionForm: FC<Props> = ({ setResults }) => {
   }, []);
 
   return (
-    <form className='space-y-8' action={getMatchingPhotos}>
+    <form className='space-y-8' onSubmit={getMatchingPhotos}>
       <div className='space-y-2.5'>
         <p className='font-bold'>Upload a photo of your face</p>
         <div className='flex flex-wrap justify-between gap-4'>
