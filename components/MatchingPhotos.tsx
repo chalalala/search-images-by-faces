@@ -5,10 +5,11 @@ import { downloadAllImages } from '@/utils/file';
 
 interface Props {
   photos: FaceRecognitionResult[] | null;
+  isLoading: boolean;
 }
 
-export const MatchingPhotos: FC<Props> = ({ photos }) => {
-  if (!photos) {
+export const MatchingPhotos: FC<Props> = ({ photos, isLoading }) => {
+  if (photos === null || (isLoading && !photos.length)) {
     return null;
   }
 
