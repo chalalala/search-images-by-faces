@@ -16,9 +16,5 @@ export const getFilesByFolderLink = async (folderLink: string) => {
 
   const data = await getDriveFolderContent(folderId);
 
-  if (!data) {
-    return;
-  }
-
-  return data.files;
+  return data;
 };

@@ -13,6 +13,7 @@ import { getFilesByFolderLink } from '@/utils/googleapis';
 import { getDriveFileContent } from '@/utils/apis/googleapis';
 import { getBestMatchFace } from '@/utils/faceRecognition';
 import { MatchingPhotos } from './MatchingPhotos';
+import { FileListResponse } from '@/types/googleApi';
 
 const MODEL_URL = '/models';
 
@@ -83,7 +84,7 @@ export const FaceRecognitionForm: FC = () => {
     });
   };
 
-  const checkIsPhotoMatching = (file: File & { mimeType: string; id: string }) => {
+  const checkIsPhotoMatching = (file: FileListResponse) => {
     if (!faceWithDescriptors) {
       return;
     }
@@ -120,6 +121,10 @@ export const FaceRecognitionForm: FC = () => {
     startTransition(async () => {
       try {
         const files = await getFilesByFolderLink(folderLink);
+
+        if (!files || !files.length) {
+          return;
+        }
 
         for (const file of files) {
           // Skip non-image files
