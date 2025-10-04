@@ -17,6 +17,9 @@ import { FileListResponse } from '@/types/googleApi';
 
 const MODEL_URL = '/models';
 
+const LIMIT_FILE_PER_REQUEST = 10; // Number of files to process per request
+const MIN_TIME_BETWEEN_REQUESTS_MS = 1000; // Minimum time between requests in milliseconds
+
 export const FaceRecognitionForm: FC = () => {
   const [isPending, startTransition] = useTransition();
 
@@ -26,9 +29,6 @@ export const FaceRecognitionForm: FC = () => {
   const [faceWithDescriptors, setFaceWithDescriptors] = useState<FaceWithDescriptor | undefined>();
   const [isUsingCamera, setIsUsingCamera] = useState(false);
 
-  const [processedItems, setProcessedItems] = useState(0);
-  const [totalFiles, setTotalFiles] = useState(0);
-
   const [results, setResults] = useState<FaceRecognitionResult[] | null>(null);
 
   const isFirstLoad = useRef(true);
@@ -37,8 +37,6 @@ export const FaceRecognitionForm: FC = () => {
 
   const resetResults = () => {
     setResults(null);
-    setProcessedItems(0);
-    setTotalFiles(0);
   };
 
   const loadFaceApi = async () => {
@@ -103,8 +101,6 @@ export const FaceRecognitionForm: FC = () => {
         }
       } catch (e) {
         console.error('Error processing file:', file.name, e);
-      } finally {
-        setProcessedItems((processedItems) => processedItems + 1);
       }
     });
   };
@@ -126,14 +122,16 @@ export const FaceRecognitionForm: FC = () => {
           return;
         }
 
-        for (const file of files) {
-          // Skip non-image files
-          if (!file.mimeType.startsWith('image/')) {
-            continue;
-          }
+        const imageFiles = files.filter((file) => file.mimeType.startsWith('image/'));
+        const noChunks = Math.ceil(files.length / LIMIT_FILE_PER_REQUEST);
 
-          setTotalFiles((totalFiles) => totalFiles + 1);
-          checkIsPhotoMatching(file);
+        for (let i = 0; i < noChunks; i++) {
+          const chunk = imageFiles.slice(i * LIMIT_FILE_PER_REQUEST, (i + 1) * LIMIT_FILE_PER_REQUEST);
+          await Promise.all(chunk.map((file) => checkIsPhotoMatching(file)));
+
+          if (i < noChunks - 1) {
+            await new Promise((resolve) => setTimeout(resolve, MIN_TIME_BETWEEN_REQUESTS_MS));
+          }
         }
       } catch (err) {
         console.error(err);
@@ -191,9 +189,6 @@ export const FaceRecognitionForm: FC = () => {
       {isPending ? (
         <div className='flex items-center justify-center gap-1'>
           <LoaderCircleIcon className='block h-8 w-8 animate-spin' />
-          <span>
-            Processed {processedItems} items / {totalFiles} items
-          </span>
         </div>
       ) : null}
 
