@@ -12,20 +12,22 @@ export const getDriveFolderContent = async (folderId: string) => {
   }
 
   let data: FileListResponse[] = [];
-  const pageToken = '';
+  let nextPageToken = '';
 
   do {
     const searchParams = new URLSearchParams({
       q: `'${folderId}' in parents`,
       key: apiKey || '',
-      pageToken,
+      pageToken: nextPageToken,
     });
 
     const res = await fetch(`https://www.googleapis.com/drive/v3/files?${searchParams.toString()}`);
     const pageData = await res.json();
 
+    nextPageToken = pageData.nextPageToken;
+
     data = [...data, ...(pageData.files || [])];
-  } while (pageToken);
+  } while (nextPageToken);
 
   return data;
 };
