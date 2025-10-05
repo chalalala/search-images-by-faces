@@ -7,14 +7,20 @@ export const getDriveFolderId = (folderLink: string) => {
   return folderId;
 };
 
-export const getFilesByFolderLink = async (folderLink: string) => {
+export const getFilesByFolderLink = async (
+  folderLink: string,
+  options: {
+    pageSize?: number;
+    pageToken?: string;
+  } = {}
+) => {
   const folderId = getDriveFolderId(folderLink);
 
   if (!folderId) {
     return;
   }
 
-  const data = await getDriveFolderContent(folderId);
+  const data = await getDriveFolderContent(folderId, options);
 
   return data;
 };

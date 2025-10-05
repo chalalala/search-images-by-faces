@@ -4,30 +4,28 @@ import { getEnvVariable } from '@/actions/env';
 import { envKey } from '@/types/env';
 import { FileListResponse } from '@/types/googleApi';
 
-export const getDriveFolderContent = async (folderId: string) => {
+export const getDriveFolderContent = async (
+  folderId: string,
+  options: {
+    pageSize?: number;
+    pageToken?: string;
+  } = { pageSize: 100, pageToken: '' }
+) => {
   const apiKey = await getEnvVariable(envKey.GOOGLE_API_KEY);
 
   if (!apiKey) {
     return;
   }
 
-  let data: FileListResponse[] = [];
-  let nextPageToken = '';
+  const searchParams = new URLSearchParams({
+    q: `'${folderId}' in parents`,
+    key: apiKey || '',
+    pageToken: options.pageToken || '',
+    pageSize: (options.pageSize || '').toString(),
+  });
 
-  do {
-    const searchParams = new URLSearchParams({
-      q: `'${folderId}' in parents`,
-      key: apiKey || '',
-      pageToken: nextPageToken,
-    });
-
-    const res = await fetch(`https://www.googleapis.com/drive/v3/files?${searchParams.toString()}`);
-    const pageData = await res.json();
-
-    nextPageToken = pageData.nextPageToken;
-
-    data = [...data, ...(pageData.files || [])];
-  } while (nextPageToken);
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files?${searchParams.toString()}`);
+  const data: FileListResponse = await res.json();
 
   return data;
 };

@@ -13,12 +13,12 @@ import { getFilesByFolderLink } from '@/utils/googleapis';
 import { getDriveFileContent } from '@/utils/apis/googleapis';
 import { getBestMatchFace } from '@/utils/faceRecognition';
 import { MatchingPhotos } from './MatchingPhotos';
-import { FileListResponse } from '@/types/googleApi';
+import { FileListResponseSingleFile } from '@/types/googleApi';
 
 const MODEL_URL = '/models';
 
 const LIMIT_FILE_PER_REQUEST = 10; // Number of files to process per request
-const MIN_TIME_BETWEEN_REQUESTS_MS = 1000; // Minimum time between requests in milliseconds
+const MIN_TIME_BETWEEN_REQUESTS_MS = 10000; // Minimum time between requests in milliseconds
 
 export const FaceRecognitionForm: FC = () => {
   const [isPending, startTransition] = useTransition();
@@ -30,6 +30,7 @@ export const FaceRecognitionForm: FC = () => {
   const [isUsingCamera, setIsUsingCamera] = useState(false);
 
   const [results, setResults] = useState<FaceRecognitionResult[] | null>(null);
+  const [errorMsg, setErrorMsg] = useState('');
 
   const isFirstLoad = useRef(true);
   const faceImageElementRef = useRef<HTMLImageElement>(null);
@@ -37,6 +38,7 @@ export const FaceRecognitionForm: FC = () => {
 
   const resetResults = () => {
     setResults(null);
+    setErrorMsg('');
   };
 
   const loadFaceApi = async () => {
@@ -82,27 +84,21 @@ export const FaceRecognitionForm: FC = () => {
     });
   };
 
-  const checkIsPhotoMatching = (file: FileListResponse) => {
+  const checkIsPhotoMatching = async (file: FileListResponseSingleFile) => {
     if (!faceWithDescriptors) {
       return;
     }
 
-    startTransition(async () => {
-      try {
-        const buffer = await getDriveFileContent(file.id);
-        const imgFile = new Blob([buffer], { type: file.mimeType });
-        const img = await faceapi.bufferToImage(imgFile);
+    const buffer = await getDriveFileContent(file.id);
+    const imgFile = new Blob([buffer], { type: file.mimeType });
+    const img = await faceapi.bufferToImage(imgFile);
 
-        const bestMatch = await getBestMatchFace(img, faceWithDescriptors);
+    const bestMatch = await getBestMatchFace(img, faceWithDescriptors);
 
-        if (bestMatch) {
-          const newResult = { fileBlob: imgFile, fileName: file.name, src: img.src };
-          setResults((results) => [...(results || []), newResult]);
-        }
-      } catch (e) {
-        console.error('Error processing file:', file.name, e);
-      }
-    });
+    if (bestMatch) {
+      const newResult = { fileBlob: imgFile, fileName: file.name, src: img.src };
+      setResults((results) => [...(results || []), newResult]);
+    }
   };
 
   const getMatchingPhotos = () => {
@@ -116,25 +112,34 @@ export const FaceRecognitionForm: FC = () => {
 
     startTransition(async () => {
       try {
-        const files = await getFilesByFolderLink(folderLink);
+        let nextPageToken = '';
 
-        if (!files || !files.length) {
-          return;
-        }
+        do {
+          const data = await getFilesByFolderLink(folderLink, { pageSize: LIMIT_FILE_PER_REQUEST, pageToken: nextPageToken });
 
-        const imageFiles = files.filter((file) => file.mimeType.startsWith('image/'));
-        const noChunks = Math.ceil(files.length / LIMIT_FILE_PER_REQUEST);
-
-        for (let i = 0; i < noChunks; i++) {
-          const chunk = imageFiles.slice(i * LIMIT_FILE_PER_REQUEST, (i + 1) * LIMIT_FILE_PER_REQUEST);
-          await Promise.all(chunk.map((file) => checkIsPhotoMatching(file)));
-
-          if (i < noChunks - 1) {
-            await new Promise((resolve) => setTimeout(resolve, MIN_TIME_BETWEEN_REQUESTS_MS));
+          if (!data) {
+            setErrorMsg('Cannot get folder content. Please check the folder link and make sure it is public.');
+            return;
           }
-        }
+
+          nextPageToken = data.nextPageToken || '';
+          const files = data.files;
+
+          if (!files || !files.length) {
+            return;
+          }
+
+          const imageFiles = files.filter((file) => file.mimeType.startsWith('image/'));
+
+          // find matching photos in list files
+          await Promise.all(imageFiles.map((file) => checkIsPhotoMatching(file)));
+
+          // wait a bit before making the next request to avoid hitting rate limits
+          await new Promise((resolve) => setTimeout(resolve, MIN_TIME_BETWEEN_REQUESTS_MS));
+        } while (nextPageToken);
       } catch (err) {
         console.error(err);
+        setErrorMsg('Some errors occur. Please try again.');
       }
     });
   };
@@ -185,6 +190,8 @@ export const FaceRecognitionForm: FC = () => {
       </label>
 
       <Button>Get matching photos</Button>
+
+      {errorMsg ? <p className='text-sm text-red-700'>Some errors occur. Please try again after some minutes.</p> : null}
 
       {isPending ? (
         <div className='flex items-center justify-center gap-1'>
