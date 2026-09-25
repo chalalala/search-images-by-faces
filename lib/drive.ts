@@ -1,0 +1,120 @@
+// Server-only helpers for the Google Drive API. The API key is read here and never sent to the browser.
+import { FileListResponse } from '@/types/googleApi';
+
+const DRIVE_API_URL = 'https://www.googleapis.com/drive/v3/files';
+
+// Drive ids only contain letters, digits, '-' and '_'. Anything else is rejected so it can't be injected into the query.
+const DRIVE_ID_REGEX = /^[A-Za-z0-9_-]+$/;
+
+export class DriveApiError extends Error {
+  constructor(
+    message: string,
+    public status: number
+  ) {
+    super(message);
+    this.name = 'DriveApiError';
+  }
+}
+
+export const isValidDriveId = (id: string) => DRIVE_ID_REGEX.test(id);
+
+const getApiKey = () => {
+  const apiKey = process.env.GOOGLE_API_KEY;
+
+  if (!apiKey) {
+    throw new DriveApiError('The server is missing GOOGLE_API_KEY.', 500);
+  }
+
+  return apiKey;
+};
+
+// Turn a failed Drive response into a message the user can act on
+const toDriveApiError = async (res: Response, notFoundMessage: string) => {
+  let reason = '';
+
+  try {
+    const body = await res.json();
+    reason = body?.error?.errors?.[0]?.reason || '';
+  } catch {
+    // Body is not JSON, fall back to the status code
+  }
+
+  if (res.status === 404) {
+    return new DriveApiError(notFoundMessage, 404);
+  }
+
+  if (res.status === 429 || reason.toLowerCase().includes('ratelimit')) {
+    return new DriveApiError('Google Drive rate limit reached. Please wait a few minutes and try again.', 429);
+  }
+
+  if (res.status === 400 && reason === 'badRequest') {
+    return new DriveApiError('Google Drive rejected the request. Please check the folder link.', 400);
+  }
+
+  if (res.status === 400 || res.status === 403) {
+    return new DriveApiError('Google Drive refused the request. The server API key may be invalid or restricted.', 502);
+  }
+
+  return new DriveApiError(`Google Drive request failed (status ${res.status}).`, 502);
+};
+
+export const listDriveImages = async (
+  folderId: string,
+  options: {
+    pageSize?: number;
+    pageToken?: string;
+  } = {}
+) => {
+  if (!isValidDriveId(folderId)) {
+    throw new DriveApiError('Invalid folder id.', 400);
+  }
+
+  const searchParams = new URLSearchParams({
+    q: `'${folderId}' in parents and mimeType contains 'image/' and trashed = false`,
+    fields: 'nextPageToken,files(id,name,mimeType)',
+    key: getApiKey(),
+  });
+
+  if (options.pageSize) {
+    searchParams.set('pageSize', options.pageSize.toString());
+  }
+
+  if (options.pageToken) {
+    searchParams.set('pageToken', options.pageToken);
+  }
+
+  const res = await fetch(`${DRIVE_API_URL}?${searchParams.toString()}`, { cache: 'no-store' });
+
+  if (!res.ok) {
+    throw await toDriveApiError(res, 'Folder not found. Make sure the link is correct and the folder is shared publicly.');
+  }
+
+  const data: FileListResponse = await res.json();
+
+  return data;
+};
+
+export const fetchDriveFile = async (fileId: string) => {
+  if (!isValidDriveId(fileId)) {
+    throw new DriveApiError('Invalid file id.', 400);
+  }
+
+  const searchParams = new URLSearchParams({ alt: 'media', key: getApiKey() });
+  const res = await fetch(`${DRIVE_API_URL}/${fileId}?${searchParams.toString()}`, { cache: 'no-store' });
+
+  if (!res.ok) {
+    throw await toDriveApiError(res, 'Photo not found or not shared publicly.');
+  }
+
+  return res;
+};
+
+export const driveErrorResponse = (error: unknown) => {
+  if (error instanceof DriveApiError) {
+    return Response.json({ error: error.message }, { status: error.status });
+  }
+
+  console.error(error);
+
+  return Response.json({ error: 'Something went wrong while contacting Google Drive.' }, { status: 500 });
+};

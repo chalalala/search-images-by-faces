@@ -9,9 +9,10 @@ import { LoaderCircleIcon, UploadIcon, UserIcon } from 'lucide-react';
 import { Button } from './ui/button';
 import Image from 'next/image';
 import { CameraInput } from './CameraInput';
-import { getFilesByFolderLink } from '@/utils/googleapis';
-import { getDriveFileContent } from '@/utils/apis/googleapis';
+import { getDriveFolderId } from '@/utils/googleapis';
+import { DriveRequestError, getDriveFileContent, getDriveFolderContent } from '@/utils/apis/googleapis';
 import { getBestMatchFace } from '@/utils/faceRecognition';
+import { scanDriveFolder, ScanProgress } from '@/utils/scanDriveFolder';
 import { MatchingPhotos } from './MatchingPhotos';
 import { FileListResponseSingleFile } from '@/types/googleApi';
 
@@ -31,14 +32,26 @@ export const FaceRecognitionForm: FC = () => {
 
   const [results, setResults] = useState<FaceRecognitionResult[] | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
+  const [progress, setProgress] = useState<ScanProgress | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
 
   const isFirstLoad = useRef(true);
   const faceImageElementRef = useRef<HTMLImageElement>(null);
   const driveFolderInputRef = useRef<HTMLInputElement>(null);
+  const scanAbortControllerRef = useRef<AbortController | null>(null);
+
+  const stopScan = () => {
+    scanAbortControllerRef.current?.abort();
+  };
 
   const resetResults = () => {
+    // Cancel any ongoing scan so its late results don't mix with the new ones
+    stopScan();
+    scanAbortControllerRef.current = null;
+    setIsScanning(false);
     setResults(null);
     setErrorMsg('');
+    setProgress(null);
   };
 
   const loadFaceApi = async () => {
@@ -84,18 +97,18 @@ export const FaceRecognitionForm: FC = () => {
     });
   };
 
-  const checkIsPhotoMatching = async (file: FileListResponseSingleFile) => {
-    if (!faceWithDescriptors) {
+  const checkIsPhotoMatching = async (file: FileListResponseSingleFile, signal: AbortSignal) => {
+    if (!faceWithDescriptors || signal.aborted) {
       return;
     }
 
-    const buffer = await getDriveFileContent(file.id);
+    const buffer = await getDriveFileContent(file.id, { signal });
     const imgFile = new Blob([buffer], { type: file.mimeType });
     const img = await faceapi.bufferToImage(imgFile);
 
     const bestMatch = await getBestMatchFace(img, faceWithDescriptors);
 
-    if (bestMatch) {
+    if (bestMatch && !signal.aborted) {
       const newResult = { fileBlob: imgFile, fileName: file.name, src: img.src };
       setResults((results) => [...(results || []), newResult]);
     }
@@ -104,42 +117,66 @@ export const FaceRecognitionForm: FC = () => {
   const getMatchingPhotos = () => {
     resetResults();
 
-    const folderLink = driveFolderInputRef.current?.value;
-
-    if (!folderLink || !faceWithDescriptors) {
+    if (!faceWithDescriptors) {
+      setErrorMsg('Please upload a photo with a face first.');
       return;
     }
 
+    const folderId = getDriveFolderId(driveFolderInputRef.current?.value || '');
+
+    if (!folderId) {
+      setErrorMsg('Please enter a valid Google Drive folder link.');
+      return;
+    }
+
+    const controller = new AbortController();
+    const { signal } = controller;
+    scanAbortControllerRef.current = controller;
+    setIsScanning(true);
+    setProgress({ scanned: 0, failed: 0 });
+
     startTransition(async () => {
       try {
-        let nextPageToken = '';
+        const { scanned } = await scanDriveFolder({
+          listPage: (pageToken) => getDriveFolderContent(folderId, { pageSize: LIMIT_FILE_PER_REQUEST, pageToken, signal }),
+          processFile: (file) => checkIsPhotoMatching(file, signal),
+          minTimeBetweenRequestsMs: MIN_TIME_BETWEEN_REQUESTS_MS,
+          signal,
+          onProgress: (progress) => {
+            if (!signal.aborted) {
+              setProgress(progress);
+            }
+          },
+        });
 
-        do {
-          const data = await getFilesByFolderLink(folderLink, { pageSize: LIMIT_FILE_PER_REQUEST, pageToken: nextPageToken });
+        // A newer face or scan replaced this one
+        if (scanAbortControllerRef.current !== controller) {
+          return;
+        }
 
-          if (!data) {
-            setErrorMsg('Cannot get folder content. Please check the folder link and make sure it is public.');
-            return;
-          }
+        if (!scanned && !signal.aborted) {
+          setErrorMsg('No photos found in this folder. Make sure the link is correct and the folder is shared publicly.');
+          return;
+        }
 
-          nextPageToken = data.nextPageToken || '';
-          const files = data.files;
-
-          if (!files || !files.length) {
-            return;
-          }
-
-          const imageFiles = files.filter((file) => file.mimeType.startsWith('image/'));
-
-          // find matching photos in list files
-          await Promise.all(imageFiles.map((file) => checkIsPhotoMatching(file)));
-
-          // wait a bit before making the next request to avoid hitting rate limits
-          await new Promise((resolve) => setTimeout(resolve, MIN_TIME_BETWEEN_REQUESTS_MS));
-        } while (nextPageToken);
+        // Show "No matching photos" instead of nothing when the scan finished without a match
+        setResults((results) => results ?? []);
       } catch (err) {
+        if (signal.aborted) {
+          // Stopped by the user: keep what was found so far
+          if (scanAbortControllerRef.current === controller) {
+            setResults((results) => results ?? []);
+          }
+          return;
+        }
+
         console.error(err);
-        setErrorMsg('Some errors occur. Please try again.');
+        setErrorMsg(err instanceof DriveRequestError ? err.message : 'Some errors occur. Please try again.');
+      } finally {
+        if (scanAbortControllerRef.current === controller) {
+          scanAbortControllerRef.current = null;
+          setIsScanning(false);
+        }
       }
     });
   };
@@ -149,6 +186,9 @@ export const FaceRecognitionForm: FC = () => {
       loadFaceApi();
       isFirstLoad.current = false;
     }
+
+    // Stop an ongoing scan when leaving the page
+    return () => scanAbortControllerRef.current?.abort();
   }, []);
 
   return (
@@ -189,9 +229,26 @@ export const FaceRecognitionForm: FC = () => {
         <Input ref={driveFolderInputRef} type='text' placeholder='https://drive.google.com/drive/u/0/folders/XXX' />
       </label>
 
-      <Button>Get matching photos</Button>
+      <div className='flex flex-wrap gap-2'>
+        <Button disabled={isScanning}>Get matching photos</Button>
 
-      {errorMsg ? <p className='text-sm text-red-700'>Some errors occur. Please try again after some minutes.</p> : null}
+        {isScanning ? (
+          <Button type='button' variant='outline' onClick={stopScan}>
+            Stop
+          </Button>
+        ) : null}
+      </div>
+
+      {errorMsg ? <p className='text-sm text-red-700'>{errorMsg}</p> : null}
+
+      {progress ? (
+        <p className='text-sm text-gray-600'>
+          {isScanning ? 'Scanning... ' : ''}
+          Checked {progress.scanned} {progress.scanned === 1 ? 'photo' : 'photos'}, found {results?.length ?? 0}{' '}
+          {results?.length === 1 ? 'match' : 'matches'}
+          {progress.failed ? `, ${progress.failed} could not be read` : ''}.
+        </p>
+      ) : null}
 
       {isPending ? (
         <div className='flex items-center justify-center gap-1'>
