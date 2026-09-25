@@ -3,6 +3,10 @@ import { FileListResponse } from '@/types/googleApi';
 
 const DRIVE_API_URL = 'https://www.googleapis.com/drive/v3/files';
 
+// Photos are scanned from thumbnails of this size (longest side, in px): big enough to detect faces,
+// much smaller than the originals, and thumbnails don't count against the Drive API quota
+const THUMBNAIL_SIZE = 1600;
+
 // Drive ids only contain letters, digits, '-' and '_'. Anything else is rejected so it can't be injected into the query.
 const DRIVE_ID_REGEX = /^[A-Za-z0-9_-]+$/;
 
@@ -71,7 +75,7 @@ export const listDriveImages = async (
 
   const searchParams = new URLSearchParams({
     q: `'${folderId}' in parents and mimeType contains 'image/' and trashed = false`,
-    fields: 'nextPageToken,files(id,name,mimeType)',
+    fields: 'nextPageToken,files(id,name,mimeType,thumbnailLink)',
     key: getApiKey(),
   });
 
@@ -104,6 +108,46 @@ export const fetchDriveFile = async (fileId: string) => {
 
   if (!res.ok) {
     throw await toDriveApiError(res, 'Photo not found or not shared publicly.');
+  }
+
+  return res;
+};
+
+// Thumbnail links point to Google's image CDN. Only those hosts are allowed so the route can't fetch arbitrary URLs.
+export const toThumbnailUrl = (thumbnailLink: string) => {
+  let url: URL;
+
+  try {
+    url = new URL(thumbnailLink);
+  } catch {
+    return;
+  }
+
+  if (url.protocol !== 'https:' || !url.hostname.endsWith('.googleusercontent.com')) {
+    return;
+  }
+
+  // Links end with a size option like "=s220". Ask for a bigger size instead.
+  url.pathname = url.pathname.replace(/=s\d+$/, `=s${THUMBNAIL_SIZE}`);
+
+  return url.toString();
+};
+
+export const fetchDriveThumbnail = async (thumbnailLink: string) => {
+  const url = toThumbnailUrl(thumbnailLink);
+
+  if (!url) {
+    throw new DriveApiError('Invalid thumbnail link.', 400);
+  }
+
+  const res = await fetch(url, { cache: 'no-store' });
+
+  if (res.status === 429) {
+    throw new DriveApiError('Google Drive rate limit reached. Please wait a few minutes and try again.', 429);
+  }
+
+  if (!res.ok) {
+    throw new DriveApiError(`Cannot load the photo thumbnail (status ${res.status}).`, 502);
   }
 
   return res;

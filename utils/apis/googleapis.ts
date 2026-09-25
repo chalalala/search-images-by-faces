@@ -66,3 +66,14 @@ export const getDriveFileContent = async (fileId: string, options: { signal?: Ab
 
   return buffer;
 };
+
+export const getDriveThumbnail = async (thumbnailLink: string, options: { signal?: AbortSignal } = {}) => {
+  const searchParams = new URLSearchParams({ link: thumbnailLink });
+  const res = await fetch(`/api/drive/thumbnail?${searchParams.toString()}`, { signal: options.signal });
+
+  if (!res.ok) {
+    throw await toDriveRequestError(res);
+  }
+
+  return res.blob();
+};

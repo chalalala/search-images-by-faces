@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  */
-import { DriveApiError, fetchDriveFile, listDriveImages } from './drive';
+import { DriveApiError, fetchDriveFile, listDriveImages, toThumbnailUrl } from './drive';
 
 const mockFetch = jest.fn();
 
@@ -53,4 +53,28 @@ describe('Drive API helpers', () => {
     expect(error.status).toBe(expectedStatus);
     expect(error.message).toContain(expectedMessage);
   });
+
+  it('asks Drive for thumbnail links when listing', async () => {
+    mockFetch.mockResolvedValue(Response.json({ files: [] }));
+
+    await listDriveImages('folder');
+
+    const url = new URL(mockFetch.mock.calls[0][0]);
+    expect(url.searchParams.get('fields')).toContain('thumbnailLink');
+  });
+});
+
+describe('toThumbnailUrl', () => {
+  it('asks for a bigger thumbnail', () => {
+    expect(toThumbnailUrl('https://lh3.googleusercontent.com/drive-storage/AJQWtBN-abc=s220')).toBe(
+      'https://lh3.googleusercontent.com/drive-storage/AJQWtBN-abc=s1600'
+    );
+  });
+
+  it.each(['https://example.com/image=s220', 'http://lh3.googleusercontent.com/abc=s220', 'https://googleusercontent.com.evil.com/a', 'not a url'])(
+    'rejects %s',
+    (link) => {
+      expect(toThumbnailUrl(link)).toBeUndefined();
+    }
+  );
 });

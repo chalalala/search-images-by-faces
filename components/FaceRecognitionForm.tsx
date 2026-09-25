@@ -10,7 +10,7 @@ import { Button } from './ui/button';
 import Image from 'next/image';
 import { CameraInput } from './CameraInput';
 import { getDriveFolderId } from '@/utils/googleapis';
-import { DriveRequestError, getDriveFileContent, getDriveFolderContent } from '@/utils/apis/googleapis';
+import { DriveRequestError, getDriveFileContent, getDriveFolderContent, getDriveThumbnail } from '@/utils/apis/googleapis';
 import { getBestMatchFace } from '@/utils/faceRecognition';
 import { scanDriveFolder, ScanProgress } from '@/utils/scanDriveFolder';
 import { MatchingPhotos } from './MatchingPhotos';
@@ -18,8 +18,8 @@ import { FileListResponseSingleFile } from '@/types/googleApi';
 
 const MODEL_URL = '/models';
 
-const LIMIT_FILE_PER_REQUEST = 10; // Number of files to process per request
-const MIN_TIME_BETWEEN_REQUESTS_MS = 10000; // Minimum time between requests in milliseconds
+const LIMIT_FILE_PER_REQUEST = 100; // Number of files listed per request
+const CONCURRENT_DOWNLOADS = 4; // Number of photos downloaded and checked at the same time
 
 export const FaceRecognitionForm: FC = () => {
   const [isPending, startTransition] = useTransition();
@@ -102,14 +102,32 @@ export const FaceRecognitionForm: FC = () => {
       return;
     }
 
-    const buffer = await getDriveFileContent(file.id, { signal });
-    const imgFile = new Blob([buffer], { type: file.mimeType });
+    const downloadOriginal = async () => new Blob([await getDriveFileContent(file.id, { signal })], { type: file.mimeType });
+
+    // Check faces on a thumbnail when there is one: it's smaller and doesn't use the Drive API quota
+    let thumbnail: Blob | undefined;
+
+    if (file.thumbnailLink) {
+      try {
+        thumbnail = await getDriveThumbnail(file.thumbnailLink, { signal });
+      } catch (error) {
+        if (signal.aborted || (error instanceof DriveRequestError && error.status === 429)) {
+          throw error;
+        }
+
+        console.warn(`Cannot load the thumbnail of ${file.name}, downloading the original instead:`, error);
+      }
+    }
+
+    const imgFile = thumbnail ?? (await downloadOriginal());
     const img = await faceapi.bufferToImage(imgFile);
 
     const bestMatch = await getBestMatchFace(img, faceWithDescriptors);
 
     if (bestMatch && !signal.aborted) {
-      const newResult = { fileBlob: imgFile, fileName: file.name, src: img.src };
+      // Keep the full size photo for "Download All"
+      const fileBlob = thumbnail ? await downloadOriginal() : imgFile;
+      const newResult = { fileBlob, fileName: file.name, src: img.src };
       setResults((results) => [...(results || []), newResult]);
     }
   };
@@ -140,7 +158,7 @@ export const FaceRecognitionForm: FC = () => {
         const { scanned } = await scanDriveFolder({
           listPage: (pageToken) => getDriveFolderContent(folderId, { pageSize: LIMIT_FILE_PER_REQUEST, pageToken, signal }),
           processFile: (file) => checkIsPhotoMatching(file, signal),
-          minTimeBetweenRequestsMs: MIN_TIME_BETWEEN_REQUESTS_MS,
+          concurrency: CONCURRENT_DOWNLOADS,
           signal,
           onProgress: (progress) => {
             if (!signal.aborted) {
@@ -247,6 +265,7 @@ export const FaceRecognitionForm: FC = () => {
           Checked {progress.scanned} {progress.scanned === 1 ? 'photo' : 'photos'}, found {results?.length ?? 0}{' '}
           {results?.length === 1 ? 'match' : 'matches'}
           {progress.failed ? `, ${progress.failed} could not be read` : ''}.
+          {isScanning && progress.retryInMs ? ` Google Drive is limiting requests, continuing in ${Math.ceil(progress.retryInMs / 1000)}s.` : ''}
         </p>
       ) : null}
 

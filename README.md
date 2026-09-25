@@ -28,7 +28,7 @@ Face detection and matching run in the browser with [face-api.js](https://github
    pnpm dev
    ```
 
-The Drive folder must be shared as "Anyone with the link". Photos are scanned 10 at a time, with at least 10 seconds between pages to stay under Drive's rate limits.
+The Drive folder must be shared as "Anyone with the link". Photos are checked from 1600px thumbnails, 4 at a time, which keeps large folders within Google Drive's limits; only matching photos are downloaded at full size. If Drive still rate limits the app, the scan pauses and retries.
 
 ## Scripts
 
