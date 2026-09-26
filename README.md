@@ -1,36 +1,43 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Search images by faces
 
-## Getting Started
+Find every photo of a person in a public Google Drive folder. Upload a photo of their face (or take one with the camera), paste the folder link, and the app lists the photos that match. You can download all matches as a zip.
 
-First, run the development server:
+Face detection and matching run in the browser with [face-api.js](https://github.com/justadudewhohacks/face-api.js), using the models in `public/models`. Photos are downloaded from Drive through the app's own API routes, so the Google API key stays on the server.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## Setup
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+1. Install dependencies with [pnpm](https://pnpm.io) 8 (the version is pinned in `package.json`):
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+   ```bash
+   pnpm install
+   ```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+2. Create a Google API key with the **Google Drive API** enabled ([Google Cloud console](https://console.cloud.google.com/apis/credentials)). The key is only used by the server, so leave its application restriction at **None** (a website/HTTP referrer restriction makes Google refuse it) and restrict it to the Google Drive API instead.
 
-## Learn More
+3. Copy `env.sample` to `.env.local` and fill it in:
 
-To learn more about Next.js, take a look at the following resources:
+   | Variable | Required | Description |
+   | --- | --- | --- |
+   | `GOOGLE_API_KEY` | Yes | Google API key used by the server to read public Drive folders. |
+   | `NEXT_PUBLIC_FACE_MATCHER_THRESHOLD` | No | How close a face must be to count as a match, from 0 to 1. Lower is stricter. Defaults to `0.5`. |
+   | `NEXT_PUBLIC_MIN_CONFIDENCE` | No | Minimum confidence for a face to be detected in a photo, from 0 to 1. Defaults to `0.3`. |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+4. Start the dev server and open [http://localhost:3000](http://localhost:3000):
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+   ```bash
+   pnpm dev
+   ```
 
-## Deploy on Vercel
+The Drive folder must be shared as "Anyone with the link". Photos are checked from 1600px thumbnails, 4 at a time, which keeps large folders within Google Drive's limits; only matching photos are downloaded at full size. If Drive still rate limits the app, the scan pauses and retries.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Scripts
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Command | Description |
+| --- | --- |
+| `pnpm dev` | Start the dev server. |
+| `pnpm build` | Build for production. |
+| `pnpm start` | Serve the production build. |
+| `pnpm lint` | Run ESLint. |
+| `pnpm test` | Run the Jest tests. |
+
+CI runs lint, tests and build on every pull request (`.github/workflows/ci.yml`).
