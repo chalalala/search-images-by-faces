@@ -12,7 +12,7 @@ Face detection and matching run in the browser with [face-api.js](https://github
    pnpm install
    ```
 
-2. Create a Google API key with the **Google Drive API** enabled ([Google Cloud console](https://console.cloud.google.com/apis/credentials)).
+2. Create a Google API key with the **Google Drive API** enabled ([Google Cloud console](https://console.cloud.google.com/apis/credentials)). The key is only used by the server, so leave its application restriction at **None** (a website/HTTP referrer restriction makes Google refuse it) and restrict it to the Google Drive API instead.
 
 3. Copy `env.sample` to `.env.local` and fill it in:
 
