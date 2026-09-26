@@ -35,12 +35,20 @@ const getApiKey = () => {
 // Turn a failed Drive response into a message the user can act on
 const toDriveApiError = async (res: Response, notFoundMessage: string) => {
   let reason = '';
+  let googleMessage = '';
+  let detailReasons: string[] = [];
 
   try {
     const body = await res.json();
     reason = body?.error?.errors?.[0]?.reason || '';
+    googleMessage = body?.error?.message || '';
+    detailReasons = (body?.error?.details || []).map((detail: { reason?: string }) => detail?.reason || '');
   } catch {
     // Body is not JSON, fall back to the status code
+  }
+
+  if (!res.ok) {
+    console.error(`Google Drive request failed (status ${res.status}, reason ${reason || 'unknown'}): ${googleMessage}`);
   }
 
   if (res.status === 404) {
@@ -55,8 +63,18 @@ const toDriveApiError = async (res: Response, notFoundMessage: string) => {
     return new DriveApiError('Google Drive rejected the request. Please check the folder link.', 400);
   }
 
+  // Keys restricted to websites (HTTP referrers) only work from a browser, and the key is now only used by the server
+  if (detailReasons.includes('API_KEY_HTTP_REFERRER_BLOCKED') || /referer/i.test(googleMessage)) {
+    return new DriveApiError(
+      "The Google API key only allows requests from certain websites, so the server cannot use it. In Google Cloud, set the key's application restriction to None and keep its API restriction to the Google Drive API.",
+      502
+    );
+  }
+
   if (res.status === 400 || res.status === 403) {
-    return new DriveApiError('Google Drive refused the request. The server API key may be invalid or restricted.', 502);
+    const details = googleMessage ? ` Google says: ${googleMessage}` : '';
+
+    return new DriveApiError(`Google Drive refused the request. The server API key may be invalid or restricted.${details}`, 502);
   }
 
   return new DriveApiError(`Google Drive request failed (status ${res.status}).`, 502);

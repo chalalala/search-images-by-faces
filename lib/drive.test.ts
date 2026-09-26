@@ -9,6 +9,7 @@ const driveError = (status: number, reason: string) => new Response(JSON.stringi
 
 describe('Drive API helpers', () => {
   beforeEach(() => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
     global.fetch = mockFetch;
     process.env.GOOGLE_API_KEY = 'test-key';
   });
@@ -52,6 +53,40 @@ describe('Drive API helpers', () => {
     expect(error).toBeInstanceOf(DriveApiError);
     expect(error.status).toBe(expectedStatus);
     expect(error.message).toContain(expectedMessage);
+  });
+
+  it('explains when the API key is restricted to websites', async () => {
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 403,
+            message: 'Requests from referer <empty> are blocked.',
+            errors: [{ reason: 'forbidden' }],
+            details: [{ reason: 'API_KEY_HTTP_REFERRER_BLOCKED' }],
+          },
+        }),
+        { status: 403 }
+      )
+    );
+
+    const error: DriveApiError = await listDriveImages('folder').catch((e) => e);
+
+    expect(error.status).toBe(502);
+    expect(error.message).toContain('application restriction to None');
+  });
+
+  it("includes Google's message when the key is refused for another reason", async () => {
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: { code: 400, message: 'API key not valid. Please pass a valid API key.', errors: [{ reason: 'badRequest' }] } }),
+        { status: 403 }
+      )
+    );
+
+    const error: DriveApiError = await listDriveImages('folder').catch((e) => e);
+
+    expect(error.message).toContain('Google says: API key not valid.');
   });
 
   it('asks Drive for thumbnail links when listing', async () => {
