@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  */
-import { DriveApiError, fetchDriveFile, listDriveImages, toThumbnailUrl } from './drive';
+import { DriveApiError, driveErrorResponse, fetchDriveFile, listDriveImages, PUBLIC_SERVER_ERROR_MESSAGE, toThumbnailUrl } from './drive';
 
 const mockFetch = jest.fn();
 
@@ -112,4 +112,33 @@ describe('toThumbnailUrl', () => {
       expect(toThumbnailUrl(link)).toBeUndefined();
     }
   );
+});
+
+describe('driveErrorResponse', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('shows errors about the request to the user', async () => {
+    const res = driveErrorResponse(new DriveApiError('Folder not found.', 404));
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Folder not found.' });
+  });
+
+  it('hides server configuration details from the user and logs them', async () => {
+    const error = new DriveApiError('The Google API key only allows requests from certain websites.', 502);
+    const res = driveErrorResponse(error);
+
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: PUBLIC_SERVER_ERROR_MESSAGE });
+    expect(console.error).toHaveBeenCalledWith(error);
+  });
+
+  it('hides unexpected errors', async () => {
+    const res = driveErrorResponse(new Error('socket hang up'));
+
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: PUBLIC_SERVER_ERROR_MESSAGE });
+  });
 });

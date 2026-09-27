@@ -171,12 +171,18 @@ export const fetchDriveThumbnail = async (thumbnailLink: string) => {
   return res;
 };
 
+// Shown instead of server-side problems (missing or refused API key, Drive outages), whose details are only logged
+export const PUBLIC_SERVER_ERROR_MESSAGE = 'Cannot connect to Google Drive right now. Please try again later.';
+
 export const driveErrorResponse = (error: unknown) => {
-  if (error instanceof DriveApiError) {
+  // Errors below 500 are about the user's request (bad link, private folder, rate limit) and are safe to show
+  if (error instanceof DriveApiError && error.status < 500) {
     return Response.json({ error: error.message }, { status: error.status });
   }
 
   console.error(error);
 
-  return Response.json({ error: 'Something went wrong while contacting Google Drive.' }, { status: 500 });
+  const status = error instanceof DriveApiError ? error.status : 500;
+
+  return Response.json({ error: PUBLIC_SERVER_ERROR_MESSAGE }, { status });
 };
