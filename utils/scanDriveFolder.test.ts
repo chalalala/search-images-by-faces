@@ -1,6 +1,6 @@
 import { FileListResponse, FileListResponseSingleFile } from '@/types/googleApi';
 import { DriveRequestError } from './apis/googleapis';
-import { scanDriveFolder } from './scanDriveFolder';
+import { DRIVE_FOLDER_MIME_TYPE, scanDriveFolder } from './scanDriveFolder';
 
 const image = (id: string): FileListResponseSingleFile => ({ kind: 'drive#file', id, name: `${id}.jpg`, mimeType: 'image/jpeg' });
 
@@ -17,7 +17,7 @@ const pages: Record<string, FileListResponse> = {
   'page-3': page([image('d')]),
 };
 
-const listPage = jest.fn(async (pageToken: string) => pages[pageToken]);
+const listPage = jest.fn(async (_folderId: string, pageToken: string) => pages[pageToken]);
 const rateLimitError = () => new DriveRequestError('Google Drive rate limit reached.', 429);
 const noWait = jest.fn(async () => {});
 const retry = { retries: 3, initialDelayMs: 1000, maxDelayMs: 3000 };
@@ -33,9 +33,9 @@ describe('scanDriveFolder', () => {
     });
     const onProgress = jest.fn();
 
-    const result = await scanDriveFolder({ listPage, processFile, concurrency: 2, onProgress, wait: noWait });
+    const result = await scanDriveFolder({ folderId: 'root', listPage, processFile, concurrency: 2, onProgress, wait: noWait });
 
-    expect(listPage.mock.calls.map(([token]) => token)).toEqual(['', 'page-2', 'page-3']);
+    expect(listPage.mock.calls.map(([, token]) => token)).toEqual(['', 'page-2', 'page-3']);
     expect(processFile.mock.calls.map(([file]) => file.id)).toEqual(['a', 'b', 'c', 'd']);
     expect(result).toEqual({ scanned: 4, failed: 0 });
     expect(onProgress).toHaveBeenLastCalledWith({ scanned: 4, failed: 0 });
@@ -53,7 +53,7 @@ describe('scanDriveFolder', () => {
       running--;
     });
 
-    const result = await scanDriveFolder({ listPage: async () => manyImages, processFile, concurrency: 3 });
+    const result = await scanDriveFolder({ folderId: 'root', listPage: async () => manyImages, processFile, concurrency: 3 });
 
     expect(result.scanned).toBe(10);
     expect(maxRunning).toBe(3);
@@ -73,6 +73,7 @@ describe('scanDriveFolder', () => {
     const onProgress = jest.fn();
 
     const result = await scanDriveFolder({
+      folderId: 'root',
       listPage,
       processFile,
       concurrency: 1,
@@ -89,14 +90,21 @@ describe('scanDriveFolder', () => {
 
   it('retries listing a page when rate limited', async () => {
     let calls = 0;
-    const flakyListPage = jest.fn(async (pageToken: string) => {
+    const flakyListPage = jest.fn(async (_folderId: string, pageToken: string) => {
       if (pageToken === 'page-2' && calls++ === 0) {
         throw rateLimitError();
       }
       return pages[pageToken];
     });
 
-    const result = await scanDriveFolder({ listPage: flakyListPage, processFile: async () => {}, concurrency: 2, retry, wait: noWait });
+    const result = await scanDriveFolder({
+      folderId: 'root',
+      listPage: flakyListPage,
+      processFile: async () => {},
+      concurrency: 2,
+      retry,
+      wait: noWait,
+    });
 
     expect(result.scanned).toBe(4);
     expect(flakyListPage).toHaveBeenCalledTimes(4);
@@ -107,7 +115,7 @@ describe('scanDriveFolder', () => {
       throw rateLimitError();
     });
 
-    await expect(scanDriveFolder({ listPage, processFile, concurrency: 1, retry, wait: noWait })).rejects.toThrow('rate limit');
+    await expect(scanDriveFolder({ folderId: 'root', listPage, processFile, concurrency: 1, retry, wait: noWait })).rejects.toThrow('rate limit');
     // The first photo is tried once plus 3 retries, then the scan stops without trying the others
     expect(processFile).toHaveBeenCalledTimes(4);
     expect(listPage).toHaveBeenCalledTimes(1);
@@ -120,7 +128,7 @@ describe('scanDriveFolder', () => {
       }
     });
 
-    const result = await scanDriveFolder({ listPage, processFile, concurrency: 2 });
+    const result = await scanDriveFolder({ folderId: 'root', listPage, processFile, concurrency: 2 });
 
     expect(result).toEqual({ scanned: 4, failed: 1 });
   });
@@ -130,7 +138,7 @@ describe('scanDriveFolder', () => {
       throw new DriveRequestError('The server is missing GOOGLE_API_KEY.', 500);
     });
 
-    await expect(scanDriveFolder({ listPage, processFile, concurrency: 1 })).rejects.toThrow('GOOGLE_API_KEY');
+    await expect(scanDriveFolder({ folderId: 'root', listPage, processFile, concurrency: 1 })).rejects.toThrow('GOOGLE_API_KEY');
     expect(processFile).toHaveBeenCalledTimes(1);
   });
 
@@ -138,9 +146,43 @@ describe('scanDriveFolder', () => {
     const controller = new AbortController();
     const processFile = jest.fn(async () => controller.abort());
 
-    await scanDriveFolder({ listPage, processFile, concurrency: 1, signal: controller.signal });
+    await scanDriveFolder({ folderId: 'root', listPage, processFile, concurrency: 1, signal: controller.signal });
 
     expect(listPage).toHaveBeenCalledTimes(1);
     expect(processFile).toHaveBeenCalledTimes(1);
+  });
+
+  describe('with subfolders', () => {
+    const folder = (id: string, name: string): FileListResponseSingleFile => ({ kind: 'drive#file', id, name, mimeType: DRIVE_FOLDER_MIME_TYPE });
+
+    const tree: Record<string, FileListResponse> = {
+      root: page([image('a'), folder('trip', 'Trip')]),
+      trip: page([image('b'), folder('day1', 'Day 1'), folder('root', 'Loop back to root')]),
+      day1: page([image('c')]),
+    };
+    const listTree = jest.fn(async (folderId: string) => tree[folderId]);
+
+    it('only scans the folder itself by default', async () => {
+      const processFile = jest.fn(async () => {});
+
+      const result = await scanDriveFolder({ folderId: 'root', listPage: listTree, processFile, concurrency: 2 });
+
+      expect(result.scanned).toBe(1);
+      expect(listTree).toHaveBeenCalledTimes(1);
+    });
+
+    it('scans every subfolder once and passes the folder path of each photo', async () => {
+      const processFile = jest.fn(async (_file: FileListResponseSingleFile, _folderPath: string) => {});
+
+      const result = await scanDriveFolder({ folderId: 'root', includeSubfolders: true, listPage: listTree, processFile, concurrency: 2 });
+
+      expect(result.scanned).toBe(3);
+      expect(listTree.mock.calls.map(([folderId]) => folderId)).toEqual(['root', 'trip', 'day1']);
+      expect(processFile.mock.calls.map(([file, path]) => [file.id, path])).toEqual([
+        ['a', ''],
+        ['b', 'Trip'],
+        ['c', 'Trip/Day 1'],
+      ]);
+    });
   });
 });

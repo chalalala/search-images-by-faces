@@ -1,8 +1,8 @@
 # Search images by faces
 
-Find every photo of a person in a public Google Drive folder. Upload a photo of their face (or take one with the camera), paste the folder link, and the app lists the photos that match. You can download all matches as a zip.
+Find every photo of a person in a public Google Drive folder. Upload one or more photos of their face (or take one with the camera), paste the folder link, and the app lists the photos that match. When a reference photo shows several people, pick the one to search for. Subfolders can be scanned too. Each match can be previewed, opened in Google Drive or downloaded, and you can download all matches, or a selection, as a zip.
 
-Face detection and matching run in the browser with [face-api.js](https://github.com/justadudewhohacks/face-api.js), using the models in `public/models`. Photos are downloaded from Drive through the app's own API routes, so the Google API key stays on the server.
+Face detection and matching run in the browser with [face-api.js](https://github.com/justadudewhohacks/face-api.js), in a Web Worker (`workers/faceDetection.worker.ts`) so the page stays responsive, using the models in `public/models`. Photos are downloaded from Drive through the app's own API routes, so the Google API key stays on the server.
 
 ## Setup
 
@@ -28,7 +28,7 @@ Face detection and matching run in the browser with [face-api.js](https://github
    pnpm dev
    ```
 
-The Drive folder must be shared as "Anyone with the link". Photos are checked from 1600px thumbnails, 4 at a time, which keeps large folders within Google Drive's limits; only matching photos are downloaded at full size. If Drive still rate limits the app, the scan pauses and retries.
+The Drive folder must be shared as "Anyone with the link". Photos are checked from 1600px thumbnails, 4 at a time, which keeps large folders within Google Drive's limits; full size photos are only downloaded when you download them. If Drive still rate limits the app, the scan pauses and retries.
 
 ## Scripts
 

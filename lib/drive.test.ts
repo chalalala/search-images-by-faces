@@ -27,6 +27,17 @@ describe('Drive API helpers', () => {
     expect(data.nextPageToken).toBe('next');
   });
 
+  it('also lists subfolders when asked', async () => {
+    mockFetch.mockResolvedValue(Response.json({ files: [] }));
+
+    await listDriveImages('folder', { includeFolders: true });
+
+    const url = new URL(mockFetch.mock.calls[0][0]);
+    expect(url.searchParams.get('q')).toBe(
+      "'folder' in parents and (mimeType contains 'image/' or mimeType = 'application/vnd.google-apps.folder') and trashed = false"
+    );
+  });
+
   it('rejects ids that could change the Drive query', async () => {
     await expect(listDriveImages("x' or name contains '")).rejects.toMatchObject({ status: 400 });
     await expect(fetchDriveFile('../other')).rejects.toMatchObject({ status: 400 });

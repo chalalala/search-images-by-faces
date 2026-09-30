@@ -13,9 +13,13 @@ interface RetryOptions {
   maxDelayMs: number;
 }
 
+export const DRIVE_FOLDER_MIME_TYPE = 'application/vnd.google-apps.folder';
+
 interface ScanDriveFolderOptions {
-  listPage: (pageToken: string) => Promise<FileListResponse>;
-  processFile: (file: FileListResponseSingleFile) => Promise<void>;
+  folderId: string;
+  includeSubfolders?: boolean; // Also scan every folder inside `folderId`, however deep
+  listPage: (folderId: string, pageToken: string) => Promise<FileListResponse>;
+  processFile: (file: FileListResponseSingleFile, folderPath: string) => Promise<void>; // `folderPath` is relative to `folderId`
   concurrency: number; // How many photos are downloaded and checked at the same time
   retry?: RetryOptions;
   signal?: AbortSignal;
@@ -51,11 +55,13 @@ const isRateLimitError = (error: unknown) => error instanceof DriveRequestError 
 const isFatalError = (error: unknown) => error instanceof DriveRequestError && error.status >= 500;
 
 /**
- * Walks every page of a Drive folder and runs `processFile` on each image, a few at a time.
+ * Walks every page of a Drive folder (and its subfolders when asked) and runs `processFile` on each image, a few at a time.
  * When Google Drive rate limits a request, the scan pauses and retries it with an increasing delay
  * instead of failing, so large folders can finish.
  */
 export const scanDriveFolder = async ({
+  folderId,
+  includeSubfolders = false,
   listPage,
   processFile,
   concurrency,
@@ -94,9 +100,9 @@ export const scanDriveFolder = async ({
     }
   };
 
-  const checkFile = async (file: FileListResponseSingleFile) => {
+  const checkFile = async (file: FileListResponseSingleFile, folderPath: string) => {
     try {
-      await withRetry(() => processFile(file));
+      await withRetry(() => processFile(file, folderPath));
     } catch (error) {
       if (signal?.aborted || isRateLimitError(error) || isFatalError(error)) {
         throw error;
@@ -110,31 +116,47 @@ export const scanDriveFolder = async ({
     onProgress?.({ ...progress });
   };
 
-  let pageToken = '';
+  // Folders still to scan, breadth first so photos directly in the folder come first
+  const folders = [{ id: folderId, path: '' }];
+  const seenFolderIds = new Set([folderId]);
 
-  do {
-    const page = await withRetry(() => listPage(pageToken));
-    pageToken = page.nextPageToken || '';
+  while (folders.length && !signal?.aborted) {
+    const folder = folders.shift()!;
+    let pageToken = '';
 
-    const imageFiles = (page.files || []).filter((file) => file.mimeType.startsWith('image/'));
-    let nextIndex = 0;
-    let hasStopped = false;
+    do {
+      const page = await withRetry(() => listPage(folder.id, pageToken));
+      pageToken = page.nextPageToken || '';
 
-    // Run `concurrency` workers that each take the next photo until the page is done.
-    // When one of them hits an error that ends the scan, the others stop taking photos.
-    const workers = Array.from({ length: Math.min(concurrency, imageFiles.length) }, async () => {
-      while (nextIndex < imageFiles.length && !hasStopped && !signal?.aborted) {
-        try {
-          await checkFile(imageFiles[nextIndex++]);
-        } catch (error) {
-          hasStopped = true;
-          throw error;
+      const files = page.files || [];
+      const imageFiles = files.filter((file) => file.mimeType.startsWith('image/'));
+
+      if (includeSubfolders) {
+        for (const subfolder of files.filter((file) => file.mimeType === DRIVE_FOLDER_MIME_TYPE && !seenFolderIds.has(file.id))) {
+          seenFolderIds.add(subfolder.id);
+          folders.push({ id: subfolder.id, path: folder.path ? `${folder.path}/${subfolder.name}` : subfolder.name });
         }
       }
-    });
 
-    await Promise.all(workers);
-  } while (pageToken && !signal?.aborted);
+      let nextIndex = 0;
+      let hasStopped = false;
+
+      // Run `concurrency` workers that each take the next photo until the page is done.
+      // When one of them hits an error that ends the scan, the others stop taking photos.
+      const workers = Array.from({ length: Math.min(concurrency, imageFiles.length) }, async () => {
+        while (nextIndex < imageFiles.length && !hasStopped && !signal?.aborted) {
+          try {
+            await checkFile(imageFiles[nextIndex++], folder.path);
+          } catch (error) {
+            hasStopped = true;
+            throw error;
+          }
+        }
+      });
+
+      await Promise.all(workers);
+    } while (pageToken && !signal?.aborted);
+  }
 
   return progress;
 };
