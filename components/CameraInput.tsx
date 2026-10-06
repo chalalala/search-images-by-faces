@@ -1,134 +1,77 @@
-import { FC, useCallback, useEffect, useRef } from 'react';
+import { FC, useEffect, useRef, useState } from 'react';
 import { Button } from './ui/button';
 import { Dialog, DialogContent, DialogTrigger } from './ui/dialog';
 import { DialogTitle } from '@radix-ui/react-dialog';
 import { CameraIcon } from 'lucide-react';
 
 interface Props {
-  isUsingCamera: boolean;
-  setFaceImageUrl: (url: string) => void;
-  setIsUsingCamera: (isUsingCamera: boolean) => void;
+  onCapture: (photo: Blob) => void;
 }
 
-const WIDTH = 320; // We will scale the photo width to this
-
-export const CameraInput: FC<Props> = ({ isUsingCamera, setFaceImageUrl, setIsUsingCamera }) => {
+export const CameraInput: FC<Props> = ({ onCapture }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
   const videoRef = useRef<HTMLVideoElement>(null);
-  const isStartedCamera = useRef(false);
 
-  // Computed based on the input stream
-  const height = useRef(0);
-
-  // Indicates whether or not we're currently streaming
-  // video from the camera. Obviously, we start at false.
-  const streaming = useRef(false);
-
-  const startCamera = () => {
-    const video = videoRef.current;
-
-    if (!(video instanceof HTMLVideoElement) || isStartedCamera.current) {
+  // The camera is on exactly while the dialog is open, however the dialog gets closed
+  useEffect(() => {
+    if (!isOpen) {
       return;
     }
 
-    isStartedCamera.current = true;
+    let stream: MediaStream | undefined;
+    let isClosed = false;
+    setErrorMsg('');
 
     navigator.mediaDevices
-      .getUserMedia({
-        video: true,
-        audio: false,
-      })
-      .then((stream) => {
-        video.srcObject = stream;
-        video.play();
+      .getUserMedia({ video: true, audio: false })
+      .then((newStream) => {
+        stream = newStream;
+
+        // The dialog was closed before the camera started
+        if (isClosed) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play();
+        }
       })
       .catch((err) => {
-        console.error(`An error occurred: ${err}`);
+        console.error('Cannot start the camera:', err);
+        setErrorMsg('Cannot use the camera. Please allow camera access and try again.');
       });
-  };
 
-  const stopCamera = () => {
+    return () => {
+      isClosed = true;
+      stream?.getTracks().forEach((track) => track.stop());
+    };
+  }, [isOpen]);
+
+  const takePhoto = () => {
     const video = videoRef.current;
 
-    if (!(video instanceof HTMLVideoElement) || !isStartedCamera.current) {
-      return;
-    }
-
-    isStartedCamera.current = false;
-
-    const stream = video.srcObject;
-
-    if (!(stream instanceof MediaStream)) {
-      return;
-    }
-
-    for (const track of stream.getTracks()) {
-      track.stop();
-    }
-
-    video.srcObject = null;
-  };
-
-  const onVideoCanPlay = () => {
-    const video = videoRef.current;
-
-    if (!(video instanceof HTMLVideoElement)) {
-      return;
-    }
-
-    if (!streaming.current) {
-      height.current = video.videoHeight * (WIDTH / video.videoWidth);
-
-      // Firefox currently has a bug where the height can't be read from
-      // the video, so we will make assumptions if this happens.
-      if (isNaN(height.current)) {
-        height.current = WIDTH / (4 / 3);
-      }
-
-      video.setAttribute('width', WIDTH.toString());
-      video.setAttribute('height', height.toString());
-
-      streaming.current = true;
-    }
-  };
-
-  const takePhoto = useCallback(() => {
-    const video = videoRef.current;
-
-    if (!(video instanceof HTMLVideoElement)) {
+    if (!video?.videoWidth) {
       return;
     }
 
     const canvas = document.createElement('canvas');
-    canvas.setAttribute('width', WIDTH.toString());
-    canvas.setAttribute('height', height.toString());
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d')?.drawImage(video, 0, 0);
 
-    const context = canvas.getContext('2d');
-
-    if (WIDTH && height && context) {
-      canvas.width = WIDTH;
-      canvas.height = height.current;
-      context.drawImage(video, 0, 0, WIDTH, height.current);
-
-      const data = canvas.toDataURL('image/png');
-
-      setFaceImageUrl(data);
-      setIsUsingCamera(false);
-      stopCamera();
-    }
-  }, [setFaceImageUrl, setIsUsingCamera]);
-
-  useEffect(() => {
-    process.nextTick(() => {
-      if (isUsingCamera) {
-        startCamera();
-      } else {
-        isStartedCamera.current = false;
+    canvas.toBlob((photo) => {
+      if (photo) {
+        onCapture(photo);
+        setIsOpen(false);
       }
-    });
-  }, [isUsingCamera]);
+    }, 'image/png');
+  };
 
   return (
-    <Dialog open={isUsingCamera} onOpenChange={setIsUsingCamera}>
+    <Dialog open={isOpen} onOpenChange={setIsOpen}>
       <DialogTrigger asChild>
         <Button type='button' variant='outline'>
           <span>Use photo from camera</span>
@@ -136,14 +79,18 @@ export const CameraInput: FC<Props> = ({ isUsingCamera, setFaceImageUrl, setIsUs
         </Button>
       </DialogTrigger>
 
-      <DialogContent>
+      <DialogContent aria-describedby={undefined}>
         <DialogTitle>Use photo from camera</DialogTitle>
 
-        <video ref={videoRef} className='w-full' onCanPlay={onVideoCanPlay}>
-          Video stream not available.
-        </video>
+        {errorMsg ? (
+          <p className='text-sm text-red-700'>{errorMsg}</p>
+        ) : (
+          <video ref={videoRef} className='w-full' playsInline muted>
+            Video stream not available.
+          </video>
+        )}
 
-        <Button type='button' onClick={takePhoto}>
+        <Button type='button' onClick={takePhoto} disabled={!!errorMsg}>
           Take photo
         </Button>
       </DialogContent>

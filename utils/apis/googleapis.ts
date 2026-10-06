@@ -31,10 +31,15 @@ export const getDriveFolderContent = async (
   options: {
     pageSize?: number;
     pageToken?: string;
+    includeFolders?: boolean;
     signal?: AbortSignal;
   } = {}
 ) => {
   const searchParams = new URLSearchParams({ folderId });
+
+  if (options.includeFolders) {
+    searchParams.set('includeFolders', '1');
+  }
 
   if (options.pageSize) {
     searchParams.set('pageSize', options.pageSize.toString());

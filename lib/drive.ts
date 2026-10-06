@@ -3,6 +3,8 @@ import { FileListResponse } from '@/types/googleApi';
 
 const DRIVE_API_URL = 'https://www.googleapis.com/drive/v3/files';
 
+const DRIVE_FOLDER_MIME_TYPE = 'application/vnd.google-apps.folder';
+
 // Photos are scanned from thumbnails of this size (longest side, in px): big enough to detect faces,
 // much smaller than the originals, and thumbnails don't count against the Drive API quota
 const THUMBNAIL_SIZE = 1600;
@@ -85,14 +87,17 @@ export const listDriveImages = async (
   options: {
     pageSize?: number;
     pageToken?: string;
+    includeFolders?: boolean; // Also list the subfolders, so they can be scanned too
   } = {}
 ) => {
   if (!isValidDriveId(folderId)) {
     throw new DriveApiError('Invalid folder id.', 400);
   }
 
+  const typeQuery = options.includeFolders ? `(mimeType contains 'image/' or mimeType = '${DRIVE_FOLDER_MIME_TYPE}')` : "mimeType contains 'image/'";
+
   const searchParams = new URLSearchParams({
-    q: `'${folderId}' in parents and mimeType contains 'image/' and trashed = false`,
+    q: `'${folderId}' in parents and ${typeQuery} and trashed = false`,
     fields: 'nextPageToken,files(id,name,mimeType,thumbnailLink)',
     key: getApiKey(),
   });

@@ -1,108 +1,72 @@
 'use client';
 
-import { ChangeEvent, FC, useEffect, useOptimistic, useRef, useState, useTransition } from 'react';
-import * as faceapi from 'face-api.js';
-import { Label } from './ui/label';
+import { FC, FormEvent, useCallback, useEffect, useRef, useState, useTransition } from 'react';
 import { Input } from './ui/input';
-import { FaceRecognitionResult, FaceWithDescriptor } from '@/types/faceRecognition';
-import { LoaderCircleIcon, UploadIcon, UserIcon } from 'lucide-react';
+import { FaceRecognitionResult } from '@/types/faceRecognition';
+import { LoaderCircleIcon } from 'lucide-react';
 import { Button } from './ui/button';
-import Image from 'next/image';
-import { CameraInput } from './CameraInput';
 import { getDriveFolderId } from '@/utils/googleapis';
 import { DriveRequestError, getDriveFileContent, getDriveFolderContent, getDriveThumbnail } from '@/utils/apis/googleapis';
-import { getBestMatchFace } from '@/utils/faceRecognition';
+import { getBestMatchDistance, getMatchThreshold } from '@/utils/faceRecognition';
+import { detectFaces, loadFaceModels } from '@/utils/faceDetectionClient';
 import { scanDriveFolder, ScanProgress } from '@/utils/scanDriveFolder';
 import { MatchingPhotos } from './MatchingPhotos';
+import { ReferenceFacesState, ReferencePhotos } from './ReferencePhotos';
 import { FileListResponseSingleFile } from '@/types/googleApi';
-
-const MODEL_URL = '/models';
 
 const LIMIT_FILE_PER_REQUEST = 100; // Number of files listed per request
 const CONCURRENT_DOWNLOADS = 4; // Number of photos downloaded and checked at the same time
 
+const getOriginal = async (photo: Pick<FaceRecognitionResult, 'fileId' | 'mimeType'>, signal?: AbortSignal) =>
+  new Blob([await getDriveFileContent(photo.fileId, { signal })], { type: photo.mimeType });
+
 export const FaceRecognitionForm: FC = () => {
   const [isPending, startTransition] = useTransition();
 
-  const [faceImageUrl, setFaceImageUrl] = useState('');
-  const [optimisticFaceImageUrl, setOptimisticFaceImageUrl] = useOptimistic(faceImageUrl);
-
-  const [faceWithDescriptors, setFaceWithDescriptors] = useState<FaceWithDescriptor | undefined>();
-  const [isUsingCamera, setIsUsingCamera] = useState(false);
+  const [reference, setReference] = useState<ReferenceFacesState>({ descriptors: [], isDetecting: false });
+  const [modelsError, setModelsError] = useState('');
 
   const [results, setResults] = useState<FaceRecognitionResult[] | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+  const [scanId, setScanId] = useState(0);
 
-  const isFirstLoad = useRef(true);
-  const faceImageElementRef = useRef<HTMLImageElement>(null);
   const driveFolderInputRef = useRef<HTMLInputElement>(null);
+  const includeSubfoldersInputRef = useRef<HTMLInputElement>(null);
   const scanAbortControllerRef = useRef<AbortController | null>(null);
+  const previewUrlsRef = useRef<string[]>([]); // Object URLs of the results, freed when the results are cleared
 
   const stopScan = () => {
     scanAbortControllerRef.current?.abort();
   };
 
-  const resetResults = () => {
+  const resetResults = useCallback(() => {
     // Cancel any ongoing scan so its late results don't mix with the new ones
-    stopScan();
+    scanAbortControllerRef.current?.abort();
     scanAbortControllerRef.current = null;
+    previewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    previewUrlsRef.current = [];
     setIsScanning(false);
     setResults(null);
     setErrorMsg('');
     setProgress(null);
-  };
+    setScanId((scanId) => scanId + 1);
+  }, []);
 
-  const loadFaceApi = async () => {
-    await faceapi.loadSsdMobilenetv1Model(MODEL_URL);
-    await faceapi.loadFaceLandmarkModel(MODEL_URL);
-    await faceapi.loadFaceRecognitionModel(MODEL_URL);
-  };
+  const updateReference = useCallback(
+    (newReference: ReferenceFacesState) => {
+      // Results were found with the previous faces
+      resetResults();
+      setReference(newReference);
+    },
+    [resetResults]
+  );
 
-  const uploadFaceFile = (event: ChangeEvent<HTMLInputElement>) => {
-    const imgFile = event.target.files?.[0];
-
-    if (!imgFile) {
+  const checkIsPhotoMatching = async (file: FileListResponseSingleFile, folderPath: string, descriptors: Float32Array[], signal: AbortSignal) => {
+    if (signal.aborted) {
       return;
     }
-
-    // Optimistic show the uploaded image file
-    const faceImageUrl = URL.createObjectURL(imgFile);
-    updateFaceMatcher(faceImageUrl);
-  };
-
-  const updateFaceMatcher = (faceImageUrl: string) => {
-    // Reset results when a new face image is uploaded
-    resetResults();
-
-    startTransition(async () => {
-      try {
-        setOptimisticFaceImageUrl(faceImageUrl);
-
-        // Detect the face with landmarks and face descriptor from the uploaded image
-        const faceImageElement = document.createElement('img');
-        faceImageElement.src = faceImageUrl;
-        const faceResult = await faceapi.detectSingleFace(faceImageElement).withFaceLandmarks().withFaceDescriptor();
-
-        startTransition(() => {
-          setFaceImageUrl(faceImageUrl);
-          setFaceWithDescriptors(faceResult);
-        });
-      } catch (error) {
-        console.error('Error updating face matcher:', error);
-        setFaceWithDescriptors(undefined);
-        setFaceImageUrl('');
-      }
-    });
-  };
-
-  const checkIsPhotoMatching = async (file: FileListResponseSingleFile, signal: AbortSignal) => {
-    if (!faceWithDescriptors || signal.aborted) {
-      return;
-    }
-
-    const downloadOriginal = async () => new Blob([await getDriveFileContent(file.id, { signal })], { type: file.mimeType });
 
     // Check faces on a thumbnail when there is one: it's smaller and doesn't use the Drive API quota
     let thumbnail: Blob | undefined;
@@ -119,23 +83,40 @@ export const FaceRecognitionForm: FC = () => {
       }
     }
 
-    const imgFile = thumbnail ?? (await downloadOriginal());
-    const img = await faceapi.bufferToImage(imgFile);
+    const image = thumbnail ?? (await getOriginal({ fileId: file.id, mimeType: file.mimeType }, signal));
+    const faces = await detectFaces(image);
+    const distance = getBestMatchDistance(faces, descriptors, getMatchThreshold());
 
-    const bestMatch = await getBestMatchFace(img, faceWithDescriptors);
-
-    if (bestMatch && !signal.aborted) {
-      // Keep the full size photo for "Download All"
-      const fileBlob = thumbnail ? await downloadOriginal() : imgFile;
-      const newResult = { fileBlob, fileName: file.name, src: img.src };
-      setResults((results) => [...(results || []), newResult]);
+    if (distance === undefined || signal.aborted) {
+      return;
     }
+
+    // The full size photo is only downloaded when the user downloads it
+    const previewUrl = URL.createObjectURL(image);
+    previewUrlsRef.current.push(previewUrl);
+
+    const newResult: FaceRecognitionResult = {
+      fileId: file.id,
+      fileName: file.name,
+      folderPath,
+      mimeType: file.mimeType,
+      previewUrl,
+      originalBlob: thumbnail ? undefined : image,
+    };
+    setResults((results) => [...(results || []), newResult]);
   };
 
-  const getMatchingPhotos = () => {
+  const getMatchingPhotos = (event: FormEvent<HTMLFormElement>) => {
+    // Not a form action: React holds back every update made in an action until it ends, so "Stop" would never show
+    event.preventDefault();
     resetResults();
 
-    if (!faceWithDescriptors) {
+    if (reference.isDetecting) {
+      setErrorMsg('Still looking for faces in your photos. Please wait a moment.');
+      return;
+    }
+
+    if (!reference.descriptors.length) {
       setErrorMsg('Please upload a photo with a face first.');
       return;
     }
@@ -147,6 +128,8 @@ export const FaceRecognitionForm: FC = () => {
       return;
     }
 
+    const includeSubfolders = !!includeSubfoldersInputRef.current?.checked;
+    const { descriptors } = reference;
     const controller = new AbortController();
     const { signal } = controller;
     scanAbortControllerRef.current = controller;
@@ -156,8 +139,11 @@ export const FaceRecognitionForm: FC = () => {
     startTransition(async () => {
       try {
         const { scanned } = await scanDriveFolder({
-          listPage: (pageToken) => getDriveFolderContent(folderId, { pageSize: LIMIT_FILE_PER_REQUEST, pageToken, signal }),
-          processFile: (file) => checkIsPhotoMatching(file, signal),
+          folderId,
+          includeSubfolders,
+          listPage: (folderId, pageToken) =>
+            getDriveFolderContent(folderId, { pageSize: LIMIT_FILE_PER_REQUEST, pageToken, includeFolders: includeSubfolders, signal }),
+          processFile: (file, folderPath) => checkIsPhotoMatching(file, folderPath, descriptors, signal),
           concurrency: CONCURRENT_DOWNLOADS,
           signal,
           onProgress: (progress) => {
@@ -200,52 +186,38 @@ export const FaceRecognitionForm: FC = () => {
   };
 
   useEffect(() => {
-    if (isFirstLoad.current) {
-      loadFaceApi();
-      isFirstLoad.current = false;
-    }
+    // Start downloading the face models right away, so the first photo doesn't wait for them
+    loadFaceModels().catch((error) => {
+      console.error('Cannot load the face recognition models:', error);
+      setModelsError('Cannot load face recognition. Please check your connection and reload the page.');
+    });
 
-    // Stop an ongoing scan when leaving the page
-    return () => scanAbortControllerRef.current?.abort();
+    const previewUrls = previewUrlsRef;
+
+    // Stop an ongoing scan and free the results when leaving the page
+    return () => {
+      scanAbortControllerRef.current?.abort();
+      previewUrls.current.forEach((url) => URL.revokeObjectURL(url));
+    };
   }, []);
 
   return (
-    <form className='space-y-8' action={getMatchingPhotos}>
+    <form className='space-y-8' onSubmit={getMatchingPhotos}>
+      {modelsError ? <p className='text-sm text-red-700'>{modelsError}</p> : null}
+
+      <ReferencePhotos onChange={updateReference} />
+
       <div className='space-y-2.5'>
-        <p className='font-bold'>Upload a photo of your face</p>
-        <div className='flex flex-wrap justify-between gap-4'>
-          <div className='flex-1 space-y-2.5'>
-            <div className='grid grid-cols-1 gap-2 sm:flex sm:flex-wrap'>
-              <Button type='button' variant='outline'>
-                <Label className='relative flex h-full w-full cursor-pointer items-center justify-center gap-2' title=''>
-                  <span>Upload photo</span>
-                  <UploadIcon />
-                  <Input type='file' onChange={uploadFaceFile} accept='.jpg, .jpeg, .png' className='hidden' />
-                </Label>
-              </Button>
+        <label className='block space-y-2.5'>
+          <span className='font-bold'>Public link of Google Drive Folder</span>
+          <Input ref={driveFolderInputRef} type='text' placeholder='https://drive.google.com/drive/u/0/folders/XXX' />
+        </label>
 
-              <CameraInput isUsingCamera={isUsingCamera} setIsUsingCamera={setIsUsingCamera} setFaceImageUrl={updateFaceMatcher} />
-            </div>
-
-            {!isPending && faceImageUrl && !faceWithDescriptors ? (
-              <p className='text-sm text-red-700'>Cannot detect face in selected photo.</p>
-            ) : null}
-          </div>
-
-          <div className='relative flex h-60 w-full items-center justify-center rounded bg-gray-300 sm:w-80'>
-            {optimisticFaceImageUrl ? (
-              <Image ref={faceImageElementRef} src={optimisticFaceImageUrl} className='w-full rounded object-contain' alt='face' fill />
-            ) : (
-              <UserIcon className='h-20 w-20 text-gray-500' />
-            )}
-          </div>
-        </div>
+        <label className='flex w-fit cursor-pointer items-center gap-2 text-sm'>
+          <input ref={includeSubfoldersInputRef} type='checkbox' className='h-4 w-4' />
+          Include subfolders
+        </label>
       </div>
-
-      <label className='block space-y-2.5'>
-        <span className='font-bold'>Public link of Google Drive Folder</span>
-        <Input ref={driveFolderInputRef} type='text' placeholder='https://drive.google.com/drive/u/0/folders/XXX' />
-      </label>
 
       <div className='flex flex-wrap gap-2'>
         <Button disabled={isScanning}>Get matching photos</Button>
@@ -275,7 +247,7 @@ export const FaceRecognitionForm: FC = () => {
         </div>
       ) : null}
 
-      <MatchingPhotos photos={results} isLoading={isPending} />
+      <MatchingPhotos key={scanId} photos={results} isLoading={isPending} getOriginal={(photo) => getOriginal(photo)} />
     </form>
   );
 };
